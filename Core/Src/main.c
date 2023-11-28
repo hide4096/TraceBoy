@@ -22,7 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
-#include <math.h>
+#include "arm_math.h"
 #include "ssd1306.h"
 #include "fonts.h"
 /* USER CODE END Includes */
@@ -51,6 +51,7 @@ I2C_HandleTypeDef hi2c1;
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim6;
 TIM_HandleTypeDef htim16;
 
 UART_HandleTypeDef huart2;
@@ -70,9 +71,16 @@ static void MX_TIM3_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM16_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
 const uint8_t MPU6500_ADRS = 0b1101000 << 1;
+const float PULSE_PER_ROTATION = 4096.;
+const float GEAR_RATIO = 14. / 60.;
+const float WHEEL_RADIUS = 0.035;
+const float vP = 1., vI = 0.1, vD = 0.0;
+const float rP = 0.0, rI = 0.0, rD = 0.0;
+
 
 //https://forum.digikey.com/t/stm32-printf/22033
 #ifdef __GNUC__
@@ -92,14 +100,19 @@ return ch;
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-int16_t ReadEncoder(TIM_HandleTypeDef* htim){
+float ReadSpeed(TIM_HandleTypeDef* htim, int rate){
 	int16_t _encoder = htim->Instance->CNT;
 	htim->Instance->CNT = 0;
-	return _encoder;
+  float speed = (_encoder / PULSE_PER_ROTATION * GEAR_RATIO * WHEEL_RADIUS * PI) * rate;
+  return speed;
 }
 
-void SetSpeed(float r,float l){
-	const uint32_t PERIOD = htim1.Init.Period;
+float duty_r,duty_l;
+
+void SetDuty(float r,float l){
+  duty_l = l;
+  duty_r = r;
+	const uint32_t PERIOD = htim1.Init.Period+1;
 	if(r>1.) r=1.;
 	if(l>1.) l=1.;
 
@@ -117,6 +130,47 @@ void SetSpeed(float r,float l){
 		__HAL_TIM_SET_COMPARE(&htim1,TIM_CHANNEL_3,(1+l)*PERIOD);
 		__HAL_TIM_SET_COMPARE(&htim1,TIM_CHANNEL_2,PERIOD);
 	}
+}
+
+float ReadYawrate(){
+  uint8_t yaw[2];
+  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x47,1,yaw,2,1000);
+  float yawrate_deg = (int16_t)(yaw[0]<<8 | yaw[1]) * (2000./32768.);
+  return yawrate_deg * PI / 180.; //deg/s -> rad/s
+}
+
+float spd = 0;
+float v_diff = 0.,r_diff = 0.;
+float v_integral = 0.,r_integral = 0.;
+float v_diff_prev = 0.,r_diff_prev = 0.;
+
+void SetSpeed(float v,float r){
+  float spd_r = ReadSpeed(&htim3,1000);
+	float spd_l = ReadSpeed(&htim2,1000);
+  float yaw = ReadYawrate();
+
+
+  spd = (spd_r + spd_l) / 2.;
+  v_diff = v - spd;
+  r_diff = r - yaw;
+
+  //Write a PID controller here
+  v_integral += v_diff;
+  float duty = vP * v_diff + vI * v_integral + vD * (v_diff - v_diff_prev);
+  v_diff_prev = v_diff;
+
+  r_integral += r_diff;
+  float r_duty = rP * r_diff + rI * r_integral + rD * (r_diff - r_diff_prev);
+  r_diff_prev = r_diff;
+
+  SetDuty(duty - r_duty, duty + r_duty);
+}
+
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+  if(htim == &htim6){
+    SetSpeed(0.0,0.0);
+  }
 }
 /* USER CODE END 0 */
 
@@ -156,7 +210,19 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM16_Init();
   MX_I2C1_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
+  char buf[256];
+
+  //Enable I2CDisplay
+  char useDisplay = 1;
+  if(ssd1306_Init(&hi2c1) != 0){
+	  useDisplay = 0;
+  }else{
+    ssd1306_WriteString("TraceBoy V0.2\r\n", Font_7x10, White);
+    ssd1306_UpdateScreen(&hi2c1);
+  }
+
   //Enable Encoder
   HAL_TIM_Encoder_Start(&htim2,TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
@@ -167,7 +233,7 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
 
-  SetSpeed(0,0);
+  SetDuty(0,0);
 
   //Enable Buzzer
   HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
@@ -193,57 +259,39 @@ int main(void)
 	  printf("WHO_AM_I is not correct\r\n");
 	  Error_Handler();
   }
-
-  //Enable I2CDisplay
-  char useDisplay = 1;
-  if(ssd1306_Init(&hi2c1) != 0){
-	  useDisplay = 0;
+  //Wait for Push SW
+  while(HAL_GPIO_ReadPin(SW_GPIO_Port,SW_Pin) == GPIO_PIN_SET){
+    HAL_Delay(1);
   }
-  ssd1306_WriteString("TraceBoy", Font_7x10, White);
-  ssd1306_UpdateScreen(&hi2c1);
+
+  //Enable Interrupt
+  HAL_TIM_Base_Start_IT(&htim6);
 
   printf("\033[2J");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  char buf[256];
   while (1)
   {
-
+    /*
 	  sprintf(buf,"%6d,%6d\r\n",
 			  ReadEncoder(&htim2),ReadEncoder(&htim3));
-	  sprintf(buf + strlen(buf),"%4d,%4d\r\n%4d,%4d,\n",
-			  line[0],line[1],line[2],line[3]);
 	  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x47,1,yaw,2,1000);
 	  sprintf(buf + strlen(buf),"%6d\r\n",(int16_t)(yaw[0]<<8 | yaw[1]));
-
+	  sprintf(buf,"%4d,%4d\r\n%4d,%4d,\n",
+			  line[0],line[1],line[2],line[3]);
+    */
+    sprintf(buf,"%d\r\n",(int)(spd*1000));
 	  if(useDisplay){
 		  ssd1306_Fill(Black);
-		  uint8_t y = 0;
-		  ssd1306_SetCursor(0, y);
-		  char* _point = buf;
-		  while(*_point){
-			  switch(*_point){
-			  case '\n':
-				  y+=10;
-				  ssd1306_SetCursor(0, y);
-				  break;
-			  case '\r':
-				  break;
-			  case '\t':
-				  ssd1306_WriteString("  ", Font_7x10, White);
-			  default:
-				  ssd1306_WriteChar(*_point, Font_7x10, White);
-			  }
-			  _point++;
-		  }
+      ssd1306_SetCursor(0,0);
+			ssd1306_WriteString(buf, Font_7x10, White);
 		  ssd1306_UpdateScreen(&hi2c1);
 	  }else{
 		  printf("\033[H");
 		  printf("%s",buf);
 	  }
-	  HAL_Delay(10);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -631,6 +679,44 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 64-1;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 1000-1;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
   * @brief TIM16 Initialization Function
   * @param None
   * @retval None
@@ -751,6 +837,7 @@ static void MX_DMA_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 /* USER CODE BEGIN MX_GPIO_Init_1 */
 /* USER CODE END MX_GPIO_Init_1 */
 
@@ -758,6 +845,12 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin : SW_Pin */
+  GPIO_InitStruct.Pin = SW_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(SW_GPIO_Port, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */

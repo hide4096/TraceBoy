@@ -1,0 +1,3 @@
+/home/hide/Desktop/TraceBoy/build/debug/build/CMakeFiles/TraceBoy.dir
+/home/hide/Desktop/TraceBoy/build/debug/build/CMakeFiles/edit_cache.dir
+/home/hide/Desktop/TraceBoy/build/debug/build/CMakeFiles/rebuild_cache.dir

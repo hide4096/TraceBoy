@@ -191,11 +191,29 @@ char ssd1306_WriteString(const char* str, FontDef Font, SSD1306_COLOR color)
     // Write until null-byte
     while (*str)
     {
+        //Support FunctionChar
+        switch(*str){
+            case '\n':
+                SSD1306.CurrentY += Font.FontHeight;
+                break;
+            case '\r':
+                SSD1306.CurrentX = 0;
+                break;
+            case '\t':
+                SSD1306.CurrentX += Font.FontWidth*4;
+                break;
+            default:
+                if(ssd1306_WriteChar(*str, Font, color) != *str){
+                    return *str;
+                }
+        }
+        /*
         if (ssd1306_WriteChar(*str, Font, color) != *str)
         {
             // Char could not be written
             return *str;
         }
+        */
 
         // Next char
         str++;
