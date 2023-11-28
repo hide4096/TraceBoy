@@ -195,7 +195,10 @@ int main(void)
   }
 
   //Enable I2CDisplay
-  ssd1306_Init(&hi2c1);
+  char useDisplay = 1;
+  if(ssd1306_Init(&hi2c1) != 0){
+	  useDisplay = 0;
+  }
   ssd1306_WriteString("TraceBoy", Font_7x10, White);
   ssd1306_UpdateScreen(&hi2c1);
 
@@ -204,15 +207,42 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  char buf[256];
   while (1)
   {
-	  printf("\033[H");
-	  printf("%d\t%d\r\n",
+
+	  sprintf(buf,"%6d,%6d\r\n",
 			  ReadEncoder(&htim2),ReadEncoder(&htim3));
-	  printf("%4d\t%4d\t%4d\t%4d\r\n",
+	  sprintf(buf + strlen(buf),"%4d,%4d\r\n%4d,%4d,\n",
 			  line[0],line[1],line[2],line[3]);
 	  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x47,1,yaw,2,1000);
-	  printf("%6d\r\n",(int16_t)(yaw[0]<<8 | yaw[1]));
+	  sprintf(buf + strlen(buf),"%6d\r\n",(int16_t)(yaw[0]<<8 | yaw[1]));
+
+	  if(useDisplay){
+		  ssd1306_Fill(Black);
+		  uint8_t y = 0;
+		  ssd1306_SetCursor(0, y);
+		  char* _point = buf;
+		  while(*_point){
+			  switch(*_point){
+			  case '\n':
+				  y+=10;
+				  ssd1306_SetCursor(0, y);
+				  break;
+			  case '\r':
+				  break;
+			  case '\t':
+				  ssd1306_WriteString("  ", Font_7x10, White);
+			  default:
+				  ssd1306_WriteChar(*_point, Font_7x10, White);
+			  }
+			  _point++;
+		  }
+		  ssd1306_UpdateScreen(&hi2c1);
+	  }else{
+		  printf("\033[H");
+		  printf("%s",buf);
+	  }
 	  HAL_Delay(10);
     /* USER CODE END WHILE */
 
