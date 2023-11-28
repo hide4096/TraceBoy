@@ -3,3 +3,4 @@ Debug
 Release
 .mxproject
 *.launch
+.vscode/launch.json

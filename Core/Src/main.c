@@ -79,7 +79,8 @@ const float PULSE_PER_ROTATION = 4096.;
 const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
 const float vP = 1., vI = 0.1, vD = 0.0;
-const float rP = 0.0, rI = 0.0, rD = 0.0;
+const float rP = 0.4, rI = 0.01, rD = 0.0;
+const float lP = 0.05, lI = 0.0, lD = 0.0;
 
 
 //https://forum.digikey.com/t/stm32-printf/22033
@@ -134,12 +135,15 @@ void SetDuty(float r,float l){
 
 float ReadYawrate(){
   uint8_t yaw[2];
-  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x47,1,yaw,2,1000);
-  float yawrate_deg = (int16_t)(yaw[0]<<8 | yaw[1]) * (2000./32768.);
+  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x47,1,&yaw[0],1,1000);
+  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x48,1,&yaw[1],1,1000);
+
+  int16_t yawrate = (int16_t)(yaw[0]<<8 | yaw[1]);
+  float yawrate_deg = yawrate * (2000./32768.);
   return yawrate_deg * PI / 180.; //deg/s -> rad/s
 }
 
-float spd = 0;
+float spd = 0, yaw = 0;
 float v_diff = 0.,r_diff = 0.;
 float v_integral = 0.,r_integral = 0.;
 float v_diff_prev = 0.,r_diff_prev = 0.;
@@ -147,10 +151,10 @@ float v_diff_prev = 0.,r_diff_prev = 0.;
 void SetSpeed(float v,float r){
   float spd_r = ReadSpeed(&htim3,1000);
 	float spd_l = ReadSpeed(&htim2,1000);
-  float yaw = ReadYawrate();
 
-
+  yaw = ReadYawrate();
   spd = (spd_r + spd_l) / 2.;
+
   v_diff = v - spd;
   r_diff = r - yaw;
 
@@ -166,10 +170,24 @@ void SetSpeed(float v,float r){
   SetDuty(duty - r_duty, duty + r_duty);
 }
 
+uint16_t line[4];
+float line_integral = 0.;
+float line_diff_prev = 0.;
+void LineTrace(float v){
+  float line_diff = (line[0] + line[1]) - (line[2] + line[3]);
+
+  //Write a PID controller here
+  line_integral += line_diff;
+  float r = lP * line_diff + lI * line_integral + lD * (line_diff - line_diff_prev);
+  line_diff_prev = line_diff;
+
+  SetSpeed(v , r);
+}
+
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
   if(htim == &htim6){
-    SetSpeed(0.0,0.0);
+    LineTrace(0.2);
   }
 }
 /* USER CODE END 0 */
@@ -239,7 +257,6 @@ int main(void)
   HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
 
   //Enable LineSensor
-  uint16_t line[4];
   if(HAL_ADC_Start_DMA(&hadc1,(uint32_t*)line,4) != HAL_OK){
 	  printf("ADC Start failed\r\n");
 	  Error_Handler();
@@ -248,7 +265,6 @@ int main(void)
 
   //Enable MPU6500
   uint8_t who;
-  uint8_t yaw[2];
   HAL_StatusTypeDef err;
   err = HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS, 0x75, 1, &who,1, 1000);
   if(err != HAL_OK){
@@ -259,6 +275,18 @@ int main(void)
 	  printf("WHO_AM_I is not correct\r\n");
 	  Error_Handler();
   }
+
+  HAL_I2C_Mem_Write(&hi2c1,MPU6500_ADRS,0x6B,1,(uint8_t[]){0b10000000},1,1000); //Reset
+  HAL_Delay(1);
+  HAL_I2C_Mem_Write(&hi2c1,MPU6500_ADRS,0x6B,1,(uint8_t[]){0b00001000},1,1000); //Disable TempSensor
+  HAL_I2C_Mem_Write(&hi2c1,MPU6500_ADRS,0x1B,1,(uint8_t[]){0b00011000},1,1000); //Set Gyro 2000dps
+  uint8_t GYRO_FS_SEL;
+  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x1B,1,&GYRO_FS_SEL,1,1000);
+  if(GYRO_FS_SEL != 0b00011000){
+    printf("GYRO_FS_SEL is not correct\r\n");
+    Error_Handler();
+  }
+
   //Wait for Push SW
   while(HAL_GPIO_ReadPin(SW_GPIO_Port,SW_Pin) == GPIO_PIN_SET){
     HAL_Delay(1);
@@ -282,7 +310,7 @@ int main(void)
 	  sprintf(buf,"%4d,%4d\r\n%4d,%4d,\n",
 			  line[0],line[1],line[2],line[3]);
     */
-    sprintf(buf,"%d\r\n",(int)(spd*1000));
+    sprintf(buf,"%d\r\n",(int)(yaw*1000));
 	  if(useDisplay){
 		  ssd1306_Fill(Black);
       ssd1306_SetCursor(0,0);
