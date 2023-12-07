@@ -83,7 +83,7 @@ const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
 const float vP = 30.0, vI = 1.0, vD = 0.0;
 const float rP = 6.0, rI = 0.05, rD = 0.0;
-const float lP = 5.0, lI = 0.0, lD = 0.0;
+const float lP = 7.0, lI = 0.0, lD = 0.0;
 
 
 
@@ -264,7 +264,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
         }
         break;
       case 2:
-        LineTrace(0.6);
+        LineTrace(0.8);
         break;
       case 3:
         LineTrace(0.0);
