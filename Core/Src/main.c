@@ -82,8 +82,8 @@ const float PULSE_PER_ROTATION = 4096. * 2.;
 const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
 const float vP = 30.0, vI = 1.0, vD = 0.0;
-const float rP = 6.0, rI = 0.05, rD = 0.0;
-const float lP = 7.0, lI = 0.0, lD = 0.0;
+const float rP = 7.0, rI = 0.05, rD = 0.0;
+const float lP = 8.5, lI = 0.06, lD = 0.0;
 
 
 
@@ -201,7 +201,7 @@ void SetSpeed(float v,float r){
 
   float voltage = ((float)voltage_raw / 4095.)*3.3*2.8;
   //指定電圧下回ったら停止
-  if(voltage < 7.0) mode = 0;
+  if(voltage < 7.4) mode = 0;
   
   float r_duty = (duty - yaw_duty) / voltage;
   float l_duty = (duty + yaw_duty) / voltage;
@@ -238,7 +238,7 @@ void LineTrace(float v){
 
 uint32_t count = 0;
 float curve_point = 0., stop_point = 0.;
-const float MARKER_GRACE = 0.06;
+const float MARKER_GRACE = 0.05;
 char start = 0,detect = 0;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
@@ -264,7 +264,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
         }
         break;
       case 2:
-        LineTrace(0.8);
+        LineTrace(1.0);
         break;
       case 3:
         LineTrace(0.0);
@@ -631,7 +631,7 @@ static void MX_ADC2_Init(void)
   sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
-  sConfig.SamplingTime = ADC_SAMPLETIME_19CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_601CYCLES_5;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
