@@ -44,7 +44,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+ADC_HandleTypeDef hadc2;
 DMA_HandleTypeDef hdma_adc1;
+DMA_HandleTypeDef hdma_adc2;
 
 I2C_HandleTypeDef hi2c1;
 
@@ -72,6 +74,7 @@ static void MX_ADC1_Init(void);
 static void MX_TIM16_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM6_Init(void);
+static void MX_ADC2_Init(void);
 /* USER CODE BEGIN PFP */
 
 const uint8_t MPU6500_ADRS = 0b1101000 << 1;
@@ -79,8 +82,8 @@ const float PULSE_PER_ROTATION = 4096. * 2.;
 const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
 const float vP = 1.0, vI = 0.1, vD = 0.01;
-const float rP = 0.8, rI = 0.01, rD = 0.2;
-const float lP = 1.0, lI = 0.1, lD = 0.01;
+const float rP = 0.8, rI = 0.04, rD = 0.2;
+const float lP = 1.0, lI = 0.05, lD = 0.01;
 
 
 
@@ -163,6 +166,9 @@ float v_diff_prev = 0.,r_diff_prev = 0.;
 float tgt_spd = 0.;
 float acc = 0.8 / 1000.; //0.1m/s^2
 
+uint16_t voltage_raw = 1;
+char mode = 0;
+
 void SetSpeed(float v,float r){
   float spd_r = ReadSpeed(&htim3,1000);
 	float spd_l = ReadSpeed(&htim2,1000);
@@ -190,17 +196,23 @@ void SetSpeed(float v,float r){
   v_diff_prev = v_diff;
 
   r_integral += r_diff;
-  float r_duty = rP * r_diff + rI * r_integral + rD * (r_diff - r_diff_prev);
+  float yaw_duty = rP * r_diff + rI * r_integral + rD * (r_diff - r_diff_prev);
   r_diff_prev = r_diff;
 
-  SetDuty(duty - r_duty, duty + r_duty);
+  float voltage = ((float)voltage_raw / 4095.)*3.3*(1./(1.8+1.));
+  //指定電圧下回ったら停止
+  if(voltage < 7.6) mode = 0;
+  
+  float r_duty = (duty - yaw_duty) / voltage;
+  float l_duty = (duty + yaw_duty) / voltage;
+
+  SetDuty(r_duty,l_duty);
 }
 
 uint16_t line[4];
 uint16_t line_max[4] = {1,1,1,1};
 float line_integral = 0.;
 float line_diff_prev = 0.;
-char mode = 0;
 
 float normalize(float v){
   if(v > 1.) return 1.;
@@ -321,6 +333,7 @@ int main(void)
   MX_TIM16_Init();
   MX_I2C1_Init();
   MX_TIM6_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
   char buf[256];
 
@@ -354,6 +367,13 @@ int main(void)
 	  Error_Handler();
   }
   hdma_adc1.Instance->CCR &= ~(DMA_IT_TC | DMA_IT_HT);
+
+  //Enable BatteryMonitor
+  if(HAL_ADC_Start_DMA(&hadc2,(uint32_t*)&voltage_raw,1) != HAL_OK){
+    printf("ADC Start failed\r\n");
+    Error_Handler();
+  }
+  hdma_adc2.Instance->CCR &= ~(DMA_IT_TC | DMA_IT_HT);
 
   //Enable MPU6500
   uint8_t who;
@@ -406,8 +426,9 @@ int main(void)
 	  sprintf(buf,"%4d,%4d\r\n%4d,%4d,\n",
 			  line[0],line[1],line[2],line[3]);
     */
-   sprintf(buf,"%d,%d",
-    HAL_GPIO_ReadPin(START_STOP_GPIO_Port,START_STOP_Pin),HAL_GPIO_ReadPin(CURVE_GPIO_Port,CURVE_Pin));
+    sprintf(buf,"%d,%d\r\n",
+      HAL_GPIO_ReadPin(START_STOP_GPIO_Port,START_STOP_Pin),HAL_GPIO_ReadPin(CURVE_GPIO_Port,CURVE_Pin));
+    sprintf(buf + strlen(buf),"%d\r\n",voltage_raw);
     
 	  if(useDisplay){
 		  ssd1306_Fill(Black);
@@ -563,6 +584,63 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief ADC2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC2_Init(void)
+{
+
+  /* USER CODE BEGIN ADC2_Init 0 */
+
+  /* USER CODE END ADC2_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC2_Init 1 */
+
+  /* USER CODE END ADC2_Init 1 */
+
+  /** Common config
+  */
+  hadc2.Instance = ADC2;
+  hadc2.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc2.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc2.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc2.Init.ContinuousConvMode = ENABLE;
+  hadc2.Init.DiscontinuousConvMode = DISABLE;
+  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc2.Init.NbrOfConversion = 1;
+  hadc2.Init.DMAContinuousRequests = ENABLE;
+  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc2.Init.LowPowerAutoWait = DISABLE;
+  hadc2.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
+  if (HAL_ADC_Init(&hadc2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+  sConfig.SamplingTime = ADC_SAMPLETIME_19CYCLES_5;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC2_Init 2 */
+
+  /* USER CODE END ADC2_Init 2 */
 
 }
 
@@ -953,6 +1031,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel1_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
 
 }
 
