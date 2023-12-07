@@ -81,9 +81,10 @@ const uint8_t MPU6500_ADRS = 0b1101000 << 1;
 const float PULSE_PER_ROTATION = 4096. * 2.;
 const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
+const float reduce_g = 0.1;
 const float vP = 30.0, vI = 1.0, vD = 0.0;
 const float rP = 7.0, rI = 0.05, rD = 0.0;
-const float lP = 8.5, lI = 0.06, lD = 0.0;
+const float lP = 7.0, lI = 0.0, lD = 0.0;
 
 
 
@@ -138,15 +139,22 @@ void SetDuty(float r,float l){
 }
 
 float drift = 0.;
+uint8_t data[14];
+void UpdateIMU(){
+  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x3B,1,data,14,100);
+}
 float ReadYawrate(){
-  uint8_t yaw[2];
-  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x47,1,&yaw[0],1,1000);
-  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x48,1,&yaw[1],1,1000);
-
-  int16_t yawrate_raw = (int16_t)(yaw[0]<<8 | yaw[1]);
+  int16_t yawrate_raw = (int16_t)(data[12]<<8 | data[13]);
   float yawrate = yawrate_raw * (2000./32768.) * (PI/180.);
   return yawrate - drift;
 }
+float ReadCentrifugalAcc(){
+  int16_t acc_raw = (int16_t)(data[0]<<8 | data[1]);
+  float acc_g = acc_raw * (4./32768.);
+  return fabs(acc_g);
+}
+
+
 void DetectYawDrift(int n){
   HAL_Delay(1000); //Wait for MPU6500 to be stable
   float _sum = 0.;
@@ -169,14 +177,18 @@ float acc = 1.0 / 1000.; //1.0m/s^2
 uint16_t voltage_raw = 1;
 char mode = 0;
 
-void SetSpeed(float v,float r){
+void SetSpeed(float _v,float r){
   float spd_r = ReadSpeed(&htim3,1000);
 	float spd_l = ReadSpeed(&htim2,1000);
-
+  UpdateIMU();
+  
   yaw = ReadYawrate();
   spd = (spd_r + spd_l) / 2.;
   len += spd / 1000.;
-  
+
+  float v = _v;
+  if(ReadCentrifugalAcc() > 0.5) v*= 1. - ReadCentrifugalAcc() * reduce_g;
+
   if(fabs(tgt_spd - v) < acc){
     tgt_spd = v;
   }else{
@@ -238,7 +250,7 @@ void LineTrace(float v){
 
 uint32_t count = 0;
 float curve_point = 0., stop_point = 0.;
-const float MARKER_GRACE = 0.05;
+const float MARKER_GRACE = 0.06;
 char start = 0,detect = 0;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
@@ -267,6 +279,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
         LineTrace(1.0);
         break;
       case 3:
+        HAL_GPIO_WritePin(LED_GPIO_Port,LED_Pin,GPIO_PIN_SET);
         LineTrace(0.0);
       default:
         break;
@@ -335,6 +348,8 @@ int main(void)
   MX_TIM6_Init();
   MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
+  HAL_GPIO_WritePin(LED_GPIO_Port,LED_Pin,GPIO_PIN_RESET);
+  
   char buf[256];
 
   //Enable I2CDisplay
@@ -392,10 +407,12 @@ int main(void)
   HAL_Delay(1);
   HAL_I2C_Mem_Write(&hi2c1,MPU6500_ADRS,0x6B,1,(uint8_t[]){0b00001000},1,1000); //Disable TempSensor
   HAL_I2C_Mem_Write(&hi2c1,MPU6500_ADRS,0x1B,1,(uint8_t[]){0b00011000},1,1000); //Set Gyro 2000dps
-  uint8_t GYRO_FS_SEL;
+  HAL_I2C_Mem_Write(&hi2c1,MPU6500_ADRS,0x1C,1,(uint8_t[]){0b00001000},1,1000); //Set Accel 4G
+  uint8_t GYRO_FS_SEL,ACCEL_FS_SEL;
   HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x1B,1,&GYRO_FS_SEL,1,1000);
-  if(GYRO_FS_SEL != 0b00011000){
-    printf("GYRO_FS_SEL is not correct\r\n");
+  HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x1C,1,&ACCEL_FS_SEL,1,1000);
+  if(GYRO_FS_SEL != 0b00011000 || ACCEL_FS_SEL != 0b00001000){
+    printf("Sensitivity is not correct\r\n");
     Error_Handler();
   }
 
@@ -404,6 +421,7 @@ int main(void)
 
   //Wait for Push SW
   while(HAL_GPIO_ReadPin(SW_GPIO_Port,SW_Pin) == GPIO_PIN_SET){
+    printf("%d\r\n",(int16_t)(ReadCentrifugalAcc()*1000.));
     HAL_Delay(10);
   }
   HAL_Delay(500);
@@ -1053,11 +1071,21 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pin : SW_Pin */
   GPIO_InitStruct.Pin = SW_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(SW_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LED_Pin */
+  GPIO_InitStruct.Pin = LED_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : START_STOP_Pin CURVE_Pin */
   GPIO_InitStruct.Pin = START_STOP_Pin|CURVE_Pin;
