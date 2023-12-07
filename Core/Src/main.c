@@ -81,9 +81,9 @@ const uint8_t MPU6500_ADRS = 0b1101000 << 1;
 const float PULSE_PER_ROTATION = 4096. * 2.;
 const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
-const float vP = 1.0, vI = 0.1, vD = 0.01;
-const float rP = 0.8, rI = 0.04, rD = 0.2;
-const float lP = 1.0, lI = 0.05, lD = 0.01;
+const float vP = 30.0, vI = 1.0, vD = 0.0;
+const float rP = 6.0, rI = 0.05, rD = 0.0;
+const float lP = 5.0, lI = 0.0, lD = 0.0;
 
 
 
@@ -164,7 +164,7 @@ float v_integral = 0.,r_integral = 0.;
 float v_diff_prev = 0.,r_diff_prev = 0.;
 
 float tgt_spd = 0.;
-float acc = 0.8 / 1000.; //0.1m/s^2
+float acc = 1.0 / 1000.; //1.0m/s^2
 
 uint16_t voltage_raw = 1;
 char mode = 0;
@@ -199,9 +199,9 @@ void SetSpeed(float v,float r){
   float yaw_duty = rP * r_diff + rI * r_integral + rD * (r_diff - r_diff_prev);
   r_diff_prev = r_diff;
 
-  float voltage = ((float)voltage_raw / 4095.)*3.3*(1./(1.8+1.));
+  float voltage = ((float)voltage_raw / 4095.)*3.3*2.8;
   //指定電圧下回ったら停止
-  if(voltage < 7.6) mode = 0;
+  if(voltage < 7.0) mode = 0;
   
   float r_duty = (duty - yaw_duty) / voltage;
   float l_duty = (duty + yaw_duty) / voltage;
@@ -238,7 +238,7 @@ void LineTrace(float v){
 
 uint32_t count = 0;
 float curve_point = 0., stop_point = 0.;
-const float MARKER_GRACE = 0.04;
+const float MARKER_GRACE = 0.06;
 char start = 0,detect = 0;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
@@ -264,7 +264,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
         }
         break;
       case 2:
-        LineTrace(0.8);
+        LineTrace(0.6);
         break;
       case 3:
         LineTrace(0.0);
