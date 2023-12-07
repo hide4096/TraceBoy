@@ -75,12 +75,13 @@ static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
 const uint8_t MPU6500_ADRS = 0b1101000 << 1;
-const float PULSE_PER_ROTATION = 4096.;
+const float PULSE_PER_ROTATION = 4096. * 2.;
 const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
-const float vP = 1., vI = 0.1, vD = 0.0;
-const float rP = 0.4, rI = 0.01, rD = 0.0;
-const float lP = 0.05, lI = 0.0, lD = 0.0;
+const float vP = 1.0, vI = 0.1, vD = 0.01;
+const float rP = 0.8, rI = 0.01, rD = 0.2;
+const float lP = 1.0, lI = 0.1, lD = 0.01;
+
 
 
 //https://forum.digikey.com/t/stm32-printf/22033
@@ -104,7 +105,7 @@ return ch;
 float ReadSpeed(TIM_HandleTypeDef* htim, int rate){
 	int16_t _encoder = htim->Instance->CNT;
 	htim->Instance->CNT = 0;
-  float speed = (_encoder / PULSE_PER_ROTATION * GEAR_RATIO * WHEEL_RADIUS * PI) * rate;
+  float speed = ((_encoder / PULSE_PER_ROTATION) * GEAR_RATIO * WHEEL_RADIUS * PI) * rate;
   return speed;
 }
 
@@ -133,20 +134,34 @@ void SetDuty(float r,float l){
 	}
 }
 
+float drift = 0.;
 float ReadYawrate(){
   uint8_t yaw[2];
   HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x47,1,&yaw[0],1,1000);
   HAL_I2C_Mem_Read(&hi2c1,MPU6500_ADRS,0x48,1,&yaw[1],1,1000);
 
-  int16_t yawrate = (int16_t)(yaw[0]<<8 | yaw[1]);
-  float yawrate_deg = yawrate * (2000./32768.);
-  return yawrate_deg * PI / 180.; //deg/s -> rad/s
+  int16_t yawrate_raw = (int16_t)(yaw[0]<<8 | yaw[1]);
+  float yawrate = yawrate_raw * (2000./32768.) * (PI/180.);
+  return yawrate - drift;
+}
+void DetectYawDrift(int n){
+  HAL_Delay(1000); //Wait for MPU6500 to be stable
+  float _sum = 0.;
+  for(int i=0;i<n;i++){
+    _sum += ReadYawrate();
+    HAL_Delay(1);
+  }
+  drift = _sum / n;
 }
 
-float spd = 0, yaw = 0;
+float spd = 0, yaw = 0, len = 0;
+
 float v_diff = 0.,r_diff = 0.;
 float v_integral = 0.,r_integral = 0.;
 float v_diff_prev = 0.,r_diff_prev = 0.;
+
+float tgt_spd = 0.;
+float acc = 0.8 / 1000.; //0.1m/s^2
 
 void SetSpeed(float v,float r){
   float spd_r = ReadSpeed(&htim3,1000);
@@ -154,8 +169,19 @@ void SetSpeed(float v,float r){
 
   yaw = ReadYawrate();
   spd = (spd_r + spd_l) / 2.;
+  len += spd / 1000.;
+  
+  if(fabs(tgt_spd - v) < acc){
+    tgt_spd = v;
+  }else{
+    if(tgt_spd < v){
+      tgt_spd += acc;
+    }else{
+      tgt_spd -= acc;
+    }
+  }
 
-  v_diff = v - spd;
+  v_diff = tgt_spd - spd;
   r_diff = r - yaw;
 
   //Write a PID controller here
@@ -171,10 +197,24 @@ void SetSpeed(float v,float r){
 }
 
 uint16_t line[4];
+uint16_t line_max[4] = {1,1,1,1};
 float line_integral = 0.;
 float line_diff_prev = 0.;
+char mode = 0;
+
+float normalize(float v){
+  if(v > 1.) return 1.;
+  if(v < 0.) return 0.;
+  return v;
+}
+
 void LineTrace(float v){
-  float line_diff = (line[0] + line[1]) - (line[2] + line[3]);
+  float line_normalized[4];
+  for(int i=0;i<4;i++){
+    line_normalized[i] = (float)line[i] / line_max[i];
+    line_normalized[i] = normalize(line_normalized[i]);
+  }
+  float line_diff = (line_normalized[0] + line_normalized[1]) - (line_normalized[2] + line_normalized[3]);
 
   //Write a PID controller here
   line_integral += line_diff;
@@ -184,10 +224,62 @@ void LineTrace(float v){
   SetSpeed(v , r);
 }
 
+uint32_t count = 0;
+float curve_point = 0., stop_point = 0.;
+const float MARKER_GRACE = 0.04;
+char start = 0,detect = 0;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
   if(htim == &htim6){
-    LineTrace(0.2);
+    switch(mode){
+      case 0:
+        SetSpeed(0,0);
+        break;
+      case 1:
+        if(count <= 300){
+          SetSpeed(0,PI/2.);
+        }else if(count <= 900){
+          SetSpeed(0,-PI/2.);
+        }else if(count <= 1200){
+          SetSpeed(0,PI/2.);
+        }else{
+          SetSpeed(0,0);
+          len = 0;
+          mode = 2;
+        }
+        for(int i=0;i<4;i++){
+          if(line[i] > line_max[i]) line_max[i] = line[i];
+        }
+        break;
+      case 2:
+        LineTrace(0.8);
+        break;
+      case 3:
+        LineTrace(0.0);
+      default:
+        break;
+    }
+    count++;
+    if(detect && ((len - stop_point) > MARKER_GRACE)) mode = 3;
+
+  }
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
+  if(GPIO_Pin == START_STOP_Pin){
+    if(start){
+      if((len - curve_point) < MARKER_GRACE) return;
+      detect = 1;
+      stop_point = len;
+    }else{
+      start = 1;
+    }
+  }
+  if(GPIO_Pin == CURVE_Pin){
+    curve_point = len;
+    if(detect){
+      detect = 0;
+    }
   }
 }
 /* USER CODE END 0 */
@@ -287,13 +379,17 @@ int main(void)
     Error_Handler();
   }
 
+  mode = 0;
+  if(!useDisplay) HAL_TIM_Base_Start_IT(&htim6);
+
   //Wait for Push SW
   while(HAL_GPIO_ReadPin(SW_GPIO_Port,SW_Pin) == GPIO_PIN_SET){
-    HAL_Delay(1);
+    HAL_Delay(10);
   }
-
-  //Enable Interrupt
-  HAL_TIM_Base_Start_IT(&htim6);
+  HAL_Delay(500);
+  //DetectYawDrift(100);
+  count = 0;
+  mode = 1;
 
   printf("\033[2J");
   /* USER CODE END 2 */
@@ -310,7 +406,9 @@ int main(void)
 	  sprintf(buf,"%4d,%4d\r\n%4d,%4d,\n",
 			  line[0],line[1],line[2],line[3]);
     */
-    sprintf(buf,"%d\r\n",(int)(yaw*1000));
+   sprintf(buf,"%d,%d",
+    HAL_GPIO_ReadPin(START_STOP_GPIO_Port,START_STOP_Pin),HAL_GPIO_ReadPin(CURVE_GPIO_Port,CURVE_Pin));
+    
 	  if(useDisplay){
 		  ssd1306_Fill(Black);
       ssd1306_SetCursor(0,0);
@@ -484,7 +582,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x2000090E;
+  hi2c1.Init.Timing = 0x0000020B;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -879,6 +977,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(SW_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : START_STOP_Pin CURVE_Pin */
+  GPIO_InitStruct.Pin = START_STOP_Pin|CURVE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
