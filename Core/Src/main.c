@@ -81,10 +81,9 @@ const uint8_t MPU6500_ADRS = 0b1101000 << 1;
 const float PULSE_PER_ROTATION = 4096. * 2.;
 const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
-const float reduce_g = 0.1;
-const float vP = 30.0, vI = 1.0, vD = 0.0;
-const float rP = 7.0, rI = 0.05, rD = 0.0;
-const float lP = 7.0, lI = 0.0, lD = 0.0;
+const float vP = 30.0, vI = 1.0, vD = 0.1;
+const float rP = 7.0, rI = 0.1, rD = 0.0;
+const float lP = 6.0, lI = 0.04, lD = 0.01;
 
 
 
@@ -172,12 +171,13 @@ float v_integral = 0.,r_integral = 0.;
 float v_diff_prev = 0.,r_diff_prev = 0.;
 
 float tgt_spd = 0.;
-float acc = 1.0 / 1000.; //1.0m/s^2
+float acc = 1.2 / 1000.; //1.2m/s^2
 
 uint16_t voltage_raw = 1;
 char mode = 0;
+float voltage = 1.;
 
-void SetSpeed(float _v,float r){
+void SetSpeed(float v,float r){
   float spd_r = ReadSpeed(&htim3,1000);
 	float spd_l = ReadSpeed(&htim2,1000);
   UpdateIMU();
@@ -186,8 +186,6 @@ void SetSpeed(float _v,float r){
   spd = (spd_r + spd_l) / 2.;
   len += spd / 1000.;
 
-  float v = _v;
-  if(ReadCentrifugalAcc() > 0.5) v*= 1. - ReadCentrifugalAcc() * reduce_g;
 
   if(fabs(tgt_spd - v) < acc){
     tgt_spd = v;
@@ -198,6 +196,7 @@ void SetSpeed(float _v,float r){
       tgt_spd -= acc;
     }
   }
+  if(ReadCentrifugalAcc() > 1.2) tgt_spd *=0.98;
 
   v_diff = tgt_spd - spd;
   r_diff = r - yaw;
@@ -211,9 +210,7 @@ void SetSpeed(float _v,float r){
   float yaw_duty = rP * r_diff + rI * r_integral + rD * (r_diff - r_diff_prev);
   r_diff_prev = r_diff;
 
-  float voltage = ((float)voltage_raw / 4095.)*3.3*2.8;
-  //指定電圧下回ったら停止
-  if(voltage < 7.4) mode = 0;
+  voltage = ((float)voltage_raw / 4095.)*3.3*2.9;
   
   float r_duty = (duty - yaw_duty) / voltage;
   float l_duty = (duty + yaw_duty) / voltage;
@@ -248,9 +245,9 @@ void LineTrace(float v){
   SetSpeed(v , r);
 }
 
-uint32_t count = 0;
-float curve_point = 0., stop_point = 0.;
-const float MARKER_GRACE = 0.06;
+uint32_t count = 0,cycle = 5 - 1;
+float curve_point = 10000., stop_point = 10000.;
+const float MARKER_GRACE = 0.05;
 char start = 0,detect = 0;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
@@ -261,6 +258,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
         break;
       case 1:
         if(count <= 300){
+          if(voltage < 7.4){
+            mode = 0;
+            break;
+          }
           SetSpeed(0,PI/2.);
         }else if(count <= 900){
           SetSpeed(0,-PI/2.);
@@ -276,35 +277,59 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
         }
         break;
       case 2:
-        LineTrace(1.0);
+        LineTrace(1.2);
+        if(detect){
+          if((len - stop_point) > MARKER_GRACE){
+            v_integral = -10.0;
+            count = 0;
+
+            if(cycle > 0){
+              cycle--;
+              mode = 3;
+            }else{
+              mode = 4;
+            }
+          }
+        }
         break;
       case 3:
-        HAL_GPIO_WritePin(LED_GPIO_Port,LED_Pin,GPIO_PIN_SET);
         LineTrace(0.0);
+        if(count > 3000){
+          mode = 1;
+          count = 0;
+          start = 0;
+        }
+        break;
+      case 4:
+        LineTrace(0.0);
+        break;
       default:
         break;
     }
     count++;
-    if(detect && ((len - stop_point) > MARKER_GRACE)) mode = 3;
-
+      /*
+    if(detect == 1){
+      else detect = 0;
+    }
+    */
   }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
   if(GPIO_Pin == START_STOP_Pin){
-    if(start){
-      if((len - curve_point) < MARKER_GRACE) return;
-      detect = 1;
+    HAL_GPIO_TogglePin(LED_GPIO_Port,LED_Pin);
+    if(start == 1){
       stop_point = len;
+      if((len - curve_point) > MARKER_GRACE){
+        detect = 1;
+      }
     }else{
       start = 1;
     }
   }
   if(GPIO_Pin == CURVE_Pin){
     curve_point = len;
-    if(detect){
-      detect = 0;
-    }
+    detect = 0;
   }
 }
 /* USER CODE END 0 */
@@ -348,7 +373,6 @@ int main(void)
   MX_TIM6_Init();
   MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
-  HAL_GPIO_WritePin(LED_GPIO_Port,LED_Pin,GPIO_PIN_RESET);
   
   char buf[256];
 
@@ -457,6 +481,7 @@ int main(void)
 		  printf("\033[H");
 		  printf("%s",buf);
 	  }
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
