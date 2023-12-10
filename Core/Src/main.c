@@ -83,7 +83,7 @@ const float GEAR_RATIO = 14. / 60.;
 const float WHEEL_RADIUS = 0.035;
 const float vP = 30.0, vI = 1.0, vD = 0.1;
 const float rP = 7.0, rI = 0.1, rD = 0.0;
-const float lP = 6.0, lI = 0.04, lD = 0.01;
+const float lP = 6.5, lI = 0.00, lD = 0.01;
 
 
 
@@ -171,7 +171,7 @@ float v_integral = 0.,r_integral = 0.;
 float v_diff_prev = 0.,r_diff_prev = 0.;
 
 float tgt_spd = 0.;
-float acc = 1.2 / 1000.; //1.2m/s^2
+float acc = 0.8 / 1000.; //0.8m/s^2
 
 uint16_t voltage_raw = 1;
 char mode = 0;
@@ -196,7 +196,8 @@ void SetSpeed(float v,float r){
       tgt_spd -= acc;
     }
   }
-  if(ReadCentrifugalAcc() > 1.2) tgt_spd *=0.98;
+  if(ReadCentrifugalAcc() > 1.2) tgt_spd *=0.97;
+  //if(ReadCentrifugalAcc() > 0.8) tgt_spd *=1.- (ReadCentrifugalAcc()*0.02);
 
   v_diff = tgt_spd - spd;
   r_diff = r - yaw;
@@ -277,10 +278,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
         }
         break;
       case 2:
-        LineTrace(1.2);
+        LineTrace(1.3);
         if(detect){
           if((len - stop_point) > MARKER_GRACE){
             v_integral = -10.0;
+            SetDuty(-1.0,-1.0);
             count = 0;
 
             if(cycle > 0){
