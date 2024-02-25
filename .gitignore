@@ -4,3 +4,5 @@ Release
 .mxproject
 *.launch
 .vscode/launch.json
+build
+cmake

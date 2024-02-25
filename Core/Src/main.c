@@ -401,6 +401,8 @@ int main(void)
 
   //Enable Buzzer
   HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
+  HAL_Delay(1000);
+  HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1);
 
   //Enable LineSensor
   if(HAL_ADC_Start_DMA(&hadc1,(uint32_t*)line,4) != HAL_OK){
@@ -984,9 +986,9 @@ static void MX_TIM16_Init(void)
 
   /* USER CODE END TIM16_Init 1 */
   htim16.Instance = TIM16;
-  htim16.Init.Prescaler = 100-1;
+  htim16.Init.Prescaler = 640 - 1;
   htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim16.Init.Period = 7200-1;
+  htim16.Init.Period = 100-1;
   htim16.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim16.Init.RepetitionCounter = 0;
   htim16.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -999,7 +1001,7 @@ static void MX_TIM16_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
+  sConfigOC.Pulse = 90;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
